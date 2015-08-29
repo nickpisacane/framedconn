@@ -11,10 +11,6 @@ const (
 	addr = "127.0.0.1:3000"
 )
 
-var (
-	bad = errors.New("ASs")
-)
-
 type pair struct {
 	server, client *NetStringConn
 }
@@ -59,7 +55,7 @@ func newPair() (*pair, error) {
 func makePayload(size uint) []byte {
 	b := make([]byte, size)
 	for i := 0; i < len(b); i++ {
-		b[i] = byte('A')
+		b[i] = byte('0')
 	}
 	return b
 }
