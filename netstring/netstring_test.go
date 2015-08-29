@@ -1,8 +1,7 @@
 package netstring
 
 import (
-	"errors"
-	"fmt"
+	"bytes"
 	"net"
 	"testing"
 )
@@ -11,12 +10,7 @@ const (
 	addr = "127.0.0.1:3000"
 )
 
-type pair struct {
-	server, client *NetStringConn
-}
-
-func newPair() (*pair, error) {
-	p := &pair{}
+func createPair() (client *NetStringConn, server *NetStringConn, e error) {
 	done := make(chan error, 1)
 
 	ln, err := net.Listen("tcp", addr)
@@ -31,33 +25,24 @@ func newPair() (*pair, error) {
 				done <- err
 				break
 			}
-			p.server = NewNetStringConn(conn)
+			server = NewNetStringConn(conn)
 			done <- nil
 			break
 		}
 	}()
 
-	client, err := net.Dial("tcp", addr)
+	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		done <- err
 	}
-	p.client = NewNetStringConn(client)
+	client = NewNetStringConn(c)
 
-	err = <-done
+	e = <-done
 	if err != nil {
-		p.client.Conn().Close()
-		p.server.Conn().Close()
-		return nil, err
+		client.Conn().Close()
+		server.Conn().Close()
 	}
-	return p, err
-}
-
-func makePayload(size uint) []byte {
-	b := make([]byte, size)
-	for i := 0; i < len(b); i++ {
-		b[i] = byte('0')
-	}
-	return b
+	return
 }
 
 func check(err error) {
@@ -66,6 +51,105 @@ func check(err error) {
 	}
 }
 
-func TestMain(t *testing.T) {
-	// TODO
+func TestFrame(t *testing.T) {
+	// create client, server pair
+	client, server, err := createPair()
+	check(err)
+
+	// Frame equality server
+	frame := []byte("Hello, World.")
+	err = client.WriteFrame(frame)
+	check(err)
+	f, err := server.ReadFrame()
+	check(err)
+
+	if !bytes.Equal(frame, f) {
+		t.Error("Expected frame %s, recieved %s", frame, f)
+	}
+
+	// Frame equality client
+	err = server.WriteFrame(frame)
+	check(err)
+	f, err = client.ReadFrame()
+	check(err)
+
+	if !bytes.Equal(frame, f) {
+		t.Error("Expected frame %s, recieved %s", frame, f)
+	}
+
+	// Send a bad frame to the server. When server reads the frame
+	// err should not be nil
+	badFrame := []byte("2:ping,")
+	// Bypass netstring
+	_, err = client.conn.Write(badFrame)
+	check(err)
+	_, err = server.ReadFrame()
+	if err == nil {
+		t.Error("ReadFrame() should have failed for frame overflow")
+	}
+
+	// Check that the server cleared the buffer after the frame overflow
+	// as to not corrupt any succeding frames
+	goodFrame := []byte("good frame")
+	err = client.WriteFrame(goodFrame)
+	check(err)
+	f, err = server.ReadFrame()
+	check(err)
+	if !bytes.Equal(goodFrame, f) {
+		t.Errorf("Buffer failed to clear. Expected frame %s, recieved %s", goodFrame, f)
+	}
+
+	// Check frames are consistent across go routines
+	frame = []byte("concurrency")
+	err = server.WriteFrame(frame)
+	check(err)
+	first := make(chan []byte, 1)
+	second := make(chan []byte, 1)
+	go func() {
+		f, err = client.ReadFrame()
+		check(err)
+		first <- f
+	}()
+	go func() {
+		f, err = client.ReadFrame()
+		check(err)
+		second <- f
+	}()
+
+	verify := func(incoming []byte, msg []byte) {
+		if !bytes.Equal(incoming, msg) {
+			t.Errorf("Expected frame %s, recieved %s", msg, incoming)
+		}
+	}
+
+	// Which ever finishes first check that the frame is equal to
+	// `frame`, then send a message to client and the opposing go routine
+	// should read the correct frame
+	select {
+	case firstRecv := <-first:
+		close(first)
+		if !bytes.Equal(frame, firstRecv) {
+			t.Errorf("Expected frame %s, recieved %s", frame, firstRecv)
+		}
+		secondFrame := []byte("Second")
+		err = server.WriteFrame(secondFrame)
+		check(err)
+		verify(<-second, secondFrame)
+		close(second)
+	case secondRecv := <-second:
+		close(second)
+		if !bytes.Equal(frame, secondRecv) {
+			t.Errorf("Expected frame %s, recieved %s", frame, secondRecv)
+		}
+		firstFrame := []byte("First")
+		err = server.WriteFrame(firstFrame)
+		check(err)
+		verify(<-first, firstFrame)
+		close(first)
+	}
+
+	err = client.Close()
+	check(err)
+	err = server.Close()
+	check(err)
 }
