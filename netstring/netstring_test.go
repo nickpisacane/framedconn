@@ -19,16 +19,12 @@ func createPair() (client *NetStringConn, server *NetStringConn, e error) {
 	}
 
 	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				done <- err
-				break
-			}
-			server = NewNetStringConn(conn)
-			done <- nil
-			break
+		conn, err := ln.Accept()
+		if err != nil {
+			done <- err
 		}
+		server = NewNetStringConn(conn)
+		done <- nil
 	}()
 
 	c, err := net.Dial("tcp", addr)
